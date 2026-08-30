@@ -1,15 +1,15 @@
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-// import.meta.dirname is the folder this file lives in, so ROOT is <repo>/.tmp
+/** Every directory the tests create goes under <repo>/.tmp */
 const ROOT = resolve(import.meta.dirname, "..", ".tmp");
 
-// Every directory we hand out, remembered so cleanup() can delete them all.
+/** Paths returned by tmpdir(), kept so cleanup() knows what to delete. */
 const handedOut: string[] = [];
 
 /**
- * A brand new empty directory to point a store at.
- * Call cleanup() in an afterAll() to delete them.
+ * Creates a new empty directory and returns its path.
+ * Call cleanup() when the tests are done to delete it.
  */
 export async function tmpdir(): Promise<string> {
   await mkdir(ROOT, { recursive: true });
@@ -18,21 +18,24 @@ export async function tmpdir(): Promise<string> {
   return dir;
 }
 
-/** A path that does NOT exist yet (its grandparent does). */
+/**
+ * Returns a path to a directory that does not exist yet.
+ * Used to check that open() creates the directory itself.
+ */
 export async function unusedPath(): Promise<string> {
   return join(await tmpdir(), "nested", "store");
 }
 
-/** Delete every directory tmpdir() handed out. */
+/** Deletes every directory that tmpdir() created. */
 export async function cleanup(): Promise<void> {
   await Promise.all(handedOut.map((d) => rm(d, { recursive: true, force: true })));
   handedOut.length = 0;
 }
 
 /**
- * Shorthand for making Buffers so the tests stay readable.
- *   b("hello")          -> the 5 UTF-8 bytes of "hello"
- *   b([0xde, 0xad])     -> those 2 raw bytes
+ * Makes a Buffer.
+ * Pass a string to get its UTF-8 bytes, or an array of numbers to get those
+ * exact bytes.
  */
 export function b(s: string | number[]): Buffer {
   return typeof s === "string" ? Buffer.from(s, "utf8") : Buffer.from(s);

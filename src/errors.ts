@@ -1,7 +1,7 @@
-/** Base class for every error this store throws. Lets callers do one catch. */
+/** Parent of every error below. Catch this one to catch all of them. */
 export class BitcaskError extends Error {}
 
-/** Thrown by `get` when the key has never been written, or has been deleted. */
+/** Thrown when a key is not in the store. */
 export class KeyNotFoundError extends BitcaskError {
   constructor(key: Buffer) {
     super(`key not found: ${JSON.stringify(key.toString("latin1"))}`);
@@ -9,7 +9,7 @@ export class KeyNotFoundError extends BitcaskError {
   }
 }
 
-/** Thrown when a key or value violates the limits in LIMITS (see bitcask.ts). */
+/** Thrown when a key or value is the wrong type, empty, or too big. */
 export class InvalidArgumentError extends BitcaskError {
   constructor(message: string) {
     super(message);
@@ -17,7 +17,7 @@ export class InvalidArgumentError extends BitcaskError {
   }
 }
 
-/** Thrown when any operation is attempted on a store that has been closed. */
+/** Thrown when a method is called after the store was closed. */
 export class ClosedError extends BitcaskError {
   constructor() {
     super("store is closed");

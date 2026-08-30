@@ -17,8 +17,7 @@ describe("stage 0 - the API", () => {
     test("creates the directory if it does not exist", async () => {
       const dir = await unusedPath();
       const db = await Bitcask.open(dir);
-      const info = await stat(dir);
-      expect(info.isDirectory()).toBe(true);
+      expect((await stat(dir)).isDirectory()).toBe(true);
       await db.close();
     });
 
@@ -36,7 +35,7 @@ describe("stage 0 - the API", () => {
       await db.close();
     });
 
-    test("rejects with KeyNotFoundError for a key that was never written", async () => {
+    test("rejects with KeyNotFoundError for an unknown key", async () => {
       const db = await Bitcask.open(await tmpdir());
       await expect(db.get(b("nope"))).rejects.toThrow(KeyNotFoundError);
       await db.close();
@@ -51,17 +50,16 @@ describe("stage 0 - the API", () => {
       await db.close();
     });
 
-    test("stores an empty value, which is not the same as an absent key", async () => {
+    test("stores an empty value, which is not the same as no key", async () => {
       const db = await Bitcask.open(await tmpdir());
       await db.put(b("empty"), Buffer.alloc(0));
-      const got = await db.get(b("empty"));
-      expect(got.length).toBe(0);
+      expect((await db.get(b("empty"))).length).toBe(0);
       await db.close();
     });
 
-    test("handles a value much larger than a key", async () => {
+    test("handles a value much larger than its key", async () => {
       const db = await Bitcask.open(await tmpdir());
-      const big = Buffer.alloc(1 << 20, 0xab); // 1 MiB of 0xAB
+      const big = Buffer.alloc(1 << 20, 0xab);
       await db.put(b("big"), big);
       expect(await db.get(b("big"))).toEqual(big);
       await db.close();
@@ -79,7 +77,7 @@ describe("stage 0 - the API", () => {
 
     test("is a no-op for a key that is not present", async () => {
       const db = await Bitcask.open(await tmpdir());
-      await db.delete(b("never-existed")); // must not throw
+      await db.delete(b("never-existed"));
       await db.close();
     });
 
@@ -92,7 +90,7 @@ describe("stage 0 - the API", () => {
       await db.close();
     });
 
-    test("allows a key to be resurrected after deletion", async () => {
+    test("allows a key to be written again after deletion", async () => {
       const db = await Bitcask.open(await tmpdir());
       await db.put(b("phoenix"), b("v1"));
       await db.delete(b("phoenix"));
@@ -109,7 +107,7 @@ describe("stage 0 - the API", () => {
       await db.close();
     });
 
-    test("lists live keys only, in any order", async () => {
+    test("lists live keys only", async () => {
       const db = await Bitcask.open(await tmpdir());
       await db.put(b("a"), b("1"));
       await db.put(b("b"), b("2"));
@@ -142,9 +140,9 @@ describe("stage 0 - the API", () => {
 
     test("keeps distinct byte sequences distinct", async () => {
       const db = await Bitcask.open(await tmpdir());
-      // 0xFF and 0xFE are both invalid standalone UTF-8. Decode either one as
-      // utf8 and you get the same replacement character. If your Map key is a
-      // utf8 string, these two keys collide and this test fails.
+      // Neither 0xFF nor 0xFE is valid UTF-8. Decoding either one as UTF-8
+      // gives back the same replacement character, so a store that uses UTF-8
+      // to build its Map keys will treat these two keys as the same key.
       const k1 = b([0xff]);
       const k2 = b([0xfe]);
       await db.put(k1, b("first"));
@@ -157,8 +155,8 @@ describe("stage 0 - the API", () => {
 
     test("treats a NUL byte as an ordinary byte in a key", async () => {
       const db = await Bitcask.open(await tmpdir());
-      await db.put(b([0x61, 0x00, 0x62]), b("with-nul")); // "a\0b"
-      await db.put(b([0x61]), b("just-a")); // "a"
+      await db.put(b([0x61, 0x00, 0x62]), b("with-nul"));
+      await db.put(b([0x61]), b("just-a"));
       expect(await db.get(b([0x61, 0x00, 0x62]))).toEqual(b("with-nul"));
       expect(await db.get(b([0x61]))).toEqual(b("just-a"));
       await db.close();
@@ -170,7 +168,8 @@ describe("stage 0 - the API", () => {
       const db = await Bitcask.open(await tmpdir());
       const val = b("original");
       await db.put(b("k"), val);
-      val.fill(0x58); // caller scribbles over their own buffer after the put
+      // Overwrite the caller's buffer after the put. The stored value must not change.
+      val.fill(0x58);
       expect(await db.get(b("k"))).toEqual(b("original"));
       await db.close();
     });
@@ -188,7 +187,8 @@ describe("stage 0 - the API", () => {
       const db = await Bitcask.open(await tmpdir());
       await db.put(b("k"), b("original"));
       const got = await db.get(b("k"));
-      got.fill(0x58); // caller scribbles over what get() returned
+      // Overwrite the Buffer that get() returned. The stored value must not change.
+      got.fill(0x58);
       expect(await db.get(b("k"))).toEqual(b("original"));
       await db.close();
     });
@@ -233,10 +233,8 @@ describe("stage 0 - the API", () => {
       await db.close();
     });
 
-    test("validates the key before deciding it is missing", async () => {
+    test("reports a malformed key as invalid, not as missing", async () => {
       const db = await Bitcask.open(await tmpdir());
-      // An empty key is malformed, so this is an argument error -- not a
-      // not-found error that happens to be about an empty key.
       await expect(db.get(Buffer.alloc(0))).rejects.toThrow(InvalidArgumentError);
       await db.close();
     });
@@ -257,7 +255,7 @@ describe("stage 0 - the API", () => {
     test("is idempotent", async () => {
       const db = await Bitcask.open(await tmpdir());
       await db.close();
-      await db.close(); // must not throw
+      await db.close();
     });
   });
 });

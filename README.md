@@ -36,6 +36,9 @@ xxd .tmp/bc-XXXXXX/1.data | head -40
 Each stage adds a test file and **keeps all the previous ones**. `bun test`
 staying green is the contract: Stage 5's merge must not break Stage 0's API.
 
+Start with **[docs/stage-00.md](docs/stage-00.md)** — each stage has a brief
+holding its contract, build order and traps.
+
 New to TypeScript? **[docs/typescript-notes.md](docs/typescript-notes.md)** is a
 lookup table for exactly the TS and Buffer surface this project uses. Read §3
 (`undefined`) and §6 (Buffer) before starting Stage 0.
@@ -95,8 +98,12 @@ test/
   stageNN.test.ts
 bench/          appears in Stage 2
 docs/
-  typescript-notes.md
+  stage-NN.md          the brief for each stage: contract, build order, traps
+  typescript-notes.md  TS + Buffer lookup table
 ```
+
+Source files carry short comments only. Each stage's contract and reasoning
+lives in its brief under `docs/`, not in doc comments.
 
 ## Reference
 
