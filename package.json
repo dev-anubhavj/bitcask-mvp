@@ -1,0 +1,16 @@
+{
+  "name": "bitcask",
+  "version": "0.0.0",
+  "description": "A log-structured hash table, built stage by stage.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "watch": "bun test --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  }
+}
