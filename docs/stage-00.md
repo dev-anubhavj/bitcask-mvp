@@ -1,12 +1,47 @@
 # Stage 0 — The API
 
-**Goal:** make the store work using an in-memory `Map`. No log file, no keydir,
-no disk access except creating the directory.
+**Goal:** make the store work in memory. No log file, no keydir, no disk access
+except creating the directory.
 
 This stage settles the method signatures. Later stages change what happens
 inside these six methods, but not the methods themselves.
 
-**Done when:** `bun test stage00` passes all 28 tests.
+**Done when:** `bun test` passes all 28 tests.
+
+You edit `src/bitcask.ts` only. The tests and `src/errors.ts` stay as they are.
+
+---
+
+## Why this stage
+
+Read **[concepts.md](concepts.md) section 4** first. Short version:
+
+**A Bitcask store is a directory, not a file.** Writes only ever append, so the
+log grows forever and garbage has to be reclaimed. But you cannot delete the
+middle of a file — the only cheap deletion a filesystem offers is `unlink()`,
+which removes a whole file. So the log gets split across many files: one active
+file taking appends, and a pile of frozen ones that compaction can rewrite and
+delete. Plus hint files and a lock file, which also need somewhere to live. The
+directory is the database. That is what `open(dir)` is creating.
+
+**`close()` is where a database becomes durable.** From Stage 2 there are open
+file descriptors and buffered writes behind them; closing flushes what is
+pending and releases the handles. It also marks the store dead: once closed, the
+descriptors are invalid, so calling `get` would fail somewhere deep in the OS
+with a confusing error. Reporting `ClosedError` instead turns a mystery into a
+sentence. And it has to survive being called twice, because close lives in
+cleanup paths — `finally` blocks, signal handlers, test teardown — that can
+plausibly run more than once. A double cleanup should not become a crash.
+
+None of that is true yet in Stage 0. There is nothing to flush and no handle to
+release. What you are building now is the *state transition*, so that when
+Stage 2 gives it teeth, every method is already checking.
+
+**Why bother with a Map stage at all?** Because these six signatures do not
+move again. Stages 1-6 replace everything underneath them — record encoding,
+an append-only log, an in-memory index, crash recovery, compaction — and no
+caller ever changes. Getting the contract right now means the later stages are
+about storage engineering rather than refactoring.
 
 ---
 
@@ -23,12 +58,11 @@ inside these six methods, but not the methods themselves.
 
 **Validation** on `get`, `put` and `delete`. Throw `InvalidArgumentError` if the
 key is not a Buffer, is empty, or is longer than `LIMITS.MAX_KEY_SIZE`, or if
-the value is not a Buffer. Do this check before looking the key up, so a bad key
-gives an argument error rather than a not-found error.
+the value is not a Buffer.
 
-Use `Buffer.isBuffer(x)` for the type check. TypeScript types are removed before
-the code runs, so a `key: Buffer` annotation does not stop anyone passing a
-string at runtime.
+TypeScript types are removed before the code runs, so a `key: Buffer`
+annotation does not stop anyone passing a string at runtime. `Buffer.isBuffer(x)`
+checks at runtime.
 
 ---
 
@@ -54,31 +88,18 @@ than by removing anything.
 
 ## Suggested order
 
-Run `bun test stage00` after each step and watch the number of passing tests go up.
+Run `bun test` after each step and watch the number of passing tests go up.
 
-1. `open` and `close` — 3 tests pass. `open` is two lines: `await mkdir(dir, { recursive: true })` from `node:fs/promises`, then `return new Bitcask(dir, opts)`. `close` sets `#closed = true`.
-2. `put` and `get` for keys that exist — this is where the Map key problem shows up.
-3. Validation — 6 more tests.
-4. `delete` and `keys` — 7 more tests.
+1. `open` and `close` — until `open` works, every test fails on the same line
+   and you cannot see anything else.
+2. `put` and `get` for keys that exist.
+3. Validation.
+4. `delete` and `keys`.
 5. The `binary safety` and `ownership of buffers` groups.
 
----
-
-## Three things that will trip you up
-
-**Map keys.** `map.get(aDifferentBufferWithTheSameBytes)` returns `undefined`,
-because Map compares Buffers by identity, not by content. So the Map key has to
-be a string. Which encoding you use to build that string matters: UTF-8 turns
-different byte sequences into the same string. → TS notes §6, "Buffer to string"
-
-**Copying Buffers.** `subarray()` does not copy. It returns a second Buffer
-pointing at the same memory, so writing through one changes the other. Use
-`Buffer.from(buf)` to get a real copy. → TS notes §6, "Slicing"
-
-**Errors from async methods.** A `throw` inside an `async` method does not throw
-where it is called. It returns a rejected promise, and the error surfaces at the
-`await`. That is why the tests are written as
-`await expect(db.get(k)).rejects.toThrow(...)`. → TS notes §5
+Steps 2 and 5 are the ones with something to learn in them. If a test in those
+groups fails and the reason is not obvious, that is the point of the test — sit
+with it before asking.
 
 ---
 

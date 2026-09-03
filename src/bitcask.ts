@@ -1,4 +1,9 @@
-import { KeyNotFoundError, InvalidArgumentError, ClosedError } from "./errors.ts";
+import { mkdir } from "node:fs/promises";
+import {
+  KeyNotFoundError,
+  InvalidArgumentError,
+  ClosedError,
+} from "./errors.ts";
 
 /**
  * Largest key and value the store accepts.
@@ -23,25 +28,21 @@ export interface Options {
 /**
  * A key-value store.
  *
- * In Stage 0 the data is held in memory and nothing is written to disk.
- * The full spec for this stage is in docs/stage-00.md.
+ * The behaviour each method must have is in docs/stage-00.md and in
+ * test/stage00.test.ts. How you get there is up to you: add whatever fields
+ * you need to this class.
  */
 export class Bitcask {
   /** Directory the store was opened on. */
   readonly dir: string;
 
-  /**
-   * The stored data.
-   *
-   * The Map key is a string, not a Buffer, because Map compares Buffers by
-   * identity. Two Buffers holding the same bytes are two different Map keys,
-   * so looking up a key would never find anything. Turning the Buffer into a
-   * string and back is your job.
-   */
-  #entries = new Map<string, Buffer>();
+  // The in-memory KV index
+  // Keys are strings (latin1 encoding, since its cheaper and keeps distinct bytes distinct),
+  // so comparison is value based
+  #inMemStore = new Map<string, Buffer>();
 
-  /** Set to true by close(). Every method checks it. */
-  #closed = false;
+  // Store's state
+  #closed: boolean = false;
 
   /**
    * Private because opening a store has to await mkdir, and a constructor
@@ -53,32 +54,73 @@ export class Bitcask {
 
   /** Opens the store at `dir`, creating the directory if it does not exist. */
   static async open(dir: string, opts: Options = {}): Promise<Bitcask> {
-    throw new Error("TODO(stage-0): mkdir -p, then return new Bitcask(dir, opts)");
+    // create the directory, if it does not exist, including parent directories.
+    await mkdir(dir, { recursive: true });
+    return new Bitcask(dir, opts);
   }
 
   /** Returns the value stored under `key`, or throws KeyNotFoundError. */
   async get(key: Buffer): Promise<Buffer> {
-    throw new Error("TODO(stage-0)");
+    // Validation: Reject any operation once the store is closed
+    if (this.#closed) throw new ClosedError();
+
+    // Validation: Reject invalid or empty key buffers
+    if (!this.#isValidBufferKey(key))
+      throw new InvalidArgumentError(
+        "The supplied key is either empty or invalid",
+      );
+
+    const value = this.#inMemStore.get(key.toString("latin1"));
+    if (value === undefined) throw new KeyNotFoundError(key);
+
+    return Buffer.from(value);
   }
 
-  /**
-   * Stores `value` under `key`, replacing any value already there.
-   *
-   * Copy `value` before storing it. If you keep the caller's Buffer and they
-   * change it later, the stored value changes with it.
-   */
+  /** Stores `value` under `key`, replacing any value already there. */
   async put(key: Buffer, value: Buffer): Promise<void> {
-    throw new Error("TODO(stage-0)");
+    // Validation: Reject any operation once the store is closed
+    if (this.#closed) throw new ClosedError();
+
+    // Validation: Reject invalid, empty key buffers
+    if (!this.#isValidBufferKey(key))
+      throw new InvalidArgumentError(
+        "The supplied key is either empty or invalid",
+      );
+
+    // Validation: Reject invalid value buffers
+    if (!Buffer.isBuffer(value) || value.length > LIMITS.MAX_VALUE_SIZE)
+      throw new InvalidArgumentError("The supplied value is invalid");
+
+    this.#inMemStore.set(key.toString("latin1"), Buffer.from(value));
   }
 
   /** Removes `key`. Does nothing if the key is not in the store. */
   async delete(key: Buffer): Promise<void> {
-    throw new Error("TODO(stage-0)");
+    // Validation: Reject any operation once the store is closed
+    if (this.#closed) throw new ClosedError();
+
+    // Validation: Reject invalid or empty key buffers
+    if (!this.#isValidBufferKey(key))
+      throw new InvalidArgumentError(
+        "The supplied key is either empty or invalid",
+      );
+    this.#inMemStore.delete(key.toString("latin1"));
   }
 
   /** Returns every key in the store, in no particular order. */
   async keys(): Promise<Buffer[]> {
-    throw new Error("TODO(stage-0)");
+    // Validation: Reject any operation once the store is closed
+    if (this.#closed) throw new ClosedError();
+
+    // convert all the string keys back to Buffer type
+    const keys = this.#inMemStore
+      .keys()
+      .map((key, _) => {
+        return Buffer.from(key, "latin1");
+      })
+      .toArray();
+
+    return keys;
   }
 
   /**
@@ -86,7 +128,20 @@ export class Bitcask {
    * Every other method throws ClosedError after this.
    */
   async close(): Promise<void> {
-    throw new Error("TODO(stage-0)");
+    this.#closed = true;
+  }
+
+  /** Check if the key is a valid buffer key
+   * a. the key is an actual buffer
+   * b. non-empty buffer
+   * c. key size less than max
+   */
+  #isValidBufferKey(key: unknown): boolean {
+    return (
+      Buffer.isBuffer(key) &&
+      key.length > 0 &&
+      key.length <= LIMITS.MAX_KEY_SIZE
+    );
   }
 }
 

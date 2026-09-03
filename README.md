@@ -36,8 +36,11 @@ xxd .tmp/bc-XXXXXX/1.data | head -40
 Each stage adds a test file and **keeps all the previous ones**. `bun test`
 staying green is the contract: Stage 5's merge must not break Stage 0's API.
 
-Start with **[docs/stage-00.md](docs/stage-00.md)** — each stage has a brief
-holding its contract, build order and traps.
+Read **[docs/concepts.md](docs/concepts.md)** for why Bitcask is shaped the way
+it is — it is organised by concept, and each stage brief points at the section
+you need before you start. Then work through the stage briefs
+(**[docs/stage-00.md](docs/stage-00.md)** first), which hold the contract and
+build order for each stage.
 
 New to TypeScript? **[docs/typescript-notes.md](docs/typescript-notes.md)** is a
 lookup table for exactly the TS and Buffer surface this project uses. Read §3
@@ -98,7 +101,8 @@ test/
   stageNN.test.ts
 bench/          appears in Stage 2
 docs/
-  stage-NN.md          the brief for each stage: contract, build order, traps
+  concepts.md          why Bitcask works the way it does -- read this first
+  stage-NN.md          the brief for each stage: why, contract, build order
   typescript-notes.md  TS + Buffer lookup table
 ```
 
