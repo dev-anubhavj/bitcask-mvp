@@ -24,3 +24,19 @@ export class ClosedError extends BitcaskError {
     this.name = "ClosedError";
   }
 }
+
+/** Thrown when a record's checksum does not match the bytes it covers. */
+export class CorruptRecordError extends BitcaskError {
+  constructor(message: string) {
+    super(message);
+    this.name = "CorruptRecordError";
+  }
+}
+
+/** Thrown when a buffer ends before the record inside it does. */
+export class TruncatedRecordError extends BitcaskError {
+  constructor(message: string) {
+    super(message);
+    this.name = "TruncatedRecordError";
+  }
+}
