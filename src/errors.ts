@@ -40,3 +40,10 @@ export class TruncatedRecordError extends BitcaskError {
     this.name = "TruncatedRecordError";
   }
 }
+
+export class FileHandleError extends BitcaskError {
+  constructor(message: string) {
+    super(message);
+    this.name = "FileHandleError";
+  }
+}

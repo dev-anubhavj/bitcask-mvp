@@ -3,8 +3,14 @@ import {
   KeyNotFoundError,
   InvalidArgumentError,
   ClosedError,
+  FileHandleError,
 } from "./errors.ts";
 import { LIMITS } from "./constants.ts";
+import type { FileHandle } from "node:fs/promises";
+import path from "node:path";
+import { open } from "node:fs/promises";
+import { isValidBufferKey, isValidValueBuffer } from "./utils.ts";
+import { decode, encode, HEADER_SIZE } from "./record.ts";
 
 export interface Options {
   /**
@@ -12,6 +18,20 @@ export interface Options {
    * a new one. Ignored until Stage 4.
    */
   maxFileSize?: number;
+}
+
+export interface RecordMetadata {
+  /** Id of the file in which record is written */
+  fileId: number;
+
+  /** byte offset in the file, where the record starts */
+  offset: number;
+
+  /** totalSize of the record  */
+  totalSize: number;
+
+  /** Milliseconds since the epoch. */
+  timestamp: number;
 }
 
 /**
@@ -25,27 +45,42 @@ export class Bitcask {
   /** Directory the store was opened on. */
   readonly dir: string;
 
+  /** The file handle for the active file. */
+  #fileHandle: FileHandle | null = null;
+
   // The in-memory KV index
   // Keys are strings (latin1 encoding, since its cheaper and keeps distinct bytes distinct),
   // so comparison is value based
-  #inMemStore = new Map<string, Buffer>();
+  #keydir = new Map<string, RecordMetadata>();
 
   // Store's state
   #closed: boolean = false;
+
+  // maintain the running count of offset where the records get written in the file
+  #writeOffset: number;
 
   /**
    * Private because opening a store has to await mkdir, and a constructor
    * cannot be async. Call Bitcask.open() instead.
    */
-  private constructor(dir: string, _opts: Options) {
+  private constructor(
+    dir: string,
+    fileHandle: FileHandle,
+    writeOffset: number,
+    _opts: Options,
+  ) {
     this.dir = dir;
+    this.#fileHandle = fileHandle;
+    this.#writeOffset = writeOffset;
   }
 
   /** Opens the store at `dir`, creating the directory if it does not exist. */
   static async open(dir: string, opts: Options = {}): Promise<Bitcask> {
     // create the directory, if it does not exist, including parent directories.
     await mkdir(dir, { recursive: true });
-    return new Bitcask(dir, opts);
+    const fileHandle = await open(path.join(dir, "1.data"), "a+");
+    const writeOffset = (await fileHandle.stat()).size;
+    return new Bitcask(dir, fileHandle, writeOffset, opts);
   }
 
   /** Returns the value stored under `key`, or throws KeyNotFoundError. */
@@ -53,16 +88,33 @@ export class Bitcask {
     // Validation: Reject any operation once the store is closed
     if (this.#closed) throw new ClosedError();
 
+    // Fail early if file handle unavailable
+    if (this.#fileHandle === null)
+      throw new FileHandleError("file handle unavailable");
+
     // Validation: Reject invalid or empty key buffers
-    if (!this.#isValidBufferKey(key))
+    if (!isValidBufferKey(key))
       throw new InvalidArgumentError(
         "The supplied key is either empty or invalid",
       );
 
-    const value = this.#inMemStore.get(key.toString("latin1"));
-    if (value === undefined) throw new KeyNotFoundError(key);
+    const recordMetadata = this.#keydir.get(key.toString("latin1"));
+    if (recordMetadata === undefined) throw new KeyNotFoundError(key);
 
-    return Buffer.from(value);
+    // Allocate a read buffer to read the bytes from file
+    const readBuf = Buffer.alloc(recordMetadata.totalSize);
+
+    // Read the bytes from file
+    await this.#fileHandle.read(
+      readBuf,
+      0,
+      recordMetadata.totalSize,
+      recordMetadata.offset,
+    );
+
+    // Decode the record
+    const decodedRecord = decode(readBuf, 0);
+    return decodedRecord.value;
   }
 
   /** Stores `value` under `key`, replacing any value already there. */
@@ -70,17 +122,42 @@ export class Bitcask {
     // Validation: Reject any operation once the store is closed
     if (this.#closed) throw new ClosedError();
 
+    // Fail early if file handle unavailable
+    if (this.#fileHandle === null)
+      throw new FileHandleError("file handle unavailable");
+
     // Validation: Reject invalid, empty key buffers
-    if (!this.#isValidBufferKey(key))
+    if (!isValidBufferKey(key))
       throw new InvalidArgumentError(
         "The supplied key is either empty or invalid",
       );
 
     // Validation: Reject invalid value buffers
-    if (!Buffer.isBuffer(value) || value.length > LIMITS.MAX_VALUE_SIZE)
+    if (!isValidValueBuffer(value))
       throw new InvalidArgumentError("The supplied value is invalid");
 
-    this.#inMemStore.set(key.toString("latin1"), Buffer.from(value));
+    // Get the timestamp to be recorded
+    const timestamp = Date.now();
+
+    // Encode the data to be written to file
+    const record = encode(key, value, timestamp);
+
+    // write to the file
+    await this.#fileHandle.write(record);
+
+    // Create object to record metadata for the record written to active file.
+    const recordMetadata: RecordMetadata = {
+      fileId: 1,
+      offset: this.#writeOffset,
+      totalSize: record.length,
+      timestamp: timestamp,
+    };
+
+    // Update the write offset
+    this.#writeOffset += record.length;
+
+    // update keydir
+    this.#keydir.set(key.toString("latin1"), recordMetadata);
   }
 
   /** Removes `key`. Does nothing if the key is not in the store. */
@@ -89,11 +166,12 @@ export class Bitcask {
     if (this.#closed) throw new ClosedError();
 
     // Validation: Reject invalid or empty key buffers
-    if (!this.#isValidBufferKey(key))
+    if (!isValidBufferKey(key))
       throw new InvalidArgumentError(
         "The supplied key is either empty or invalid",
       );
-    this.#inMemStore.delete(key.toString("latin1"));
+
+    this.#keydir.delete(key.toString("latin1"));
   }
 
   /** Returns every key in the store, in no particular order. */
@@ -102,7 +180,7 @@ export class Bitcask {
     if (this.#closed) throw new ClosedError();
 
     // convert all the string keys back to Buffer type
-    const keys = this.#inMemStore
+    const keys = this.#keydir
       .keys()
       .map((key, _) => {
         return Buffer.from(key, "latin1");
@@ -117,22 +195,17 @@ export class Bitcask {
    * Every other method throws ClosedError after this.
    */
   async close(): Promise<void> {
+    // Mark closed first,
+    // so any other operation is avoided while handle is still being released
     this.#closed = true;
-  }
 
-  /** Check if the key is a valid buffer key
-   * a. the key is an actual buffer
-   * b. non-empty buffer
-   * c. key size less than max
-   */
-  #isValidBufferKey(key: unknown): boolean {
-    return (
-      Buffer.isBuffer(key) &&
-      key.length > 0 &&
-      key.length <= LIMITS.MAX_KEY_SIZE
-    );
+    // idempotency over file handle close operation
+    if (this.#fileHandle !== null) {
+      await this.#fileHandle.close();
+      this.#fileHandle = null;
+    }
   }
 }
 
 export { LIMITS };
-export { KeyNotFoundError, InvalidArgumentError, ClosedError };
+export { KeyNotFoundError, InvalidArgumentError, ClosedError, FileHandleError };

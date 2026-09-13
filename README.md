@@ -8,7 +8,7 @@ two days. Learning project.
 Bitcask is a **log-structured hash table**. Every write is an append to the end
 of a single active file — records are never modified in place. Because appends
 alone would make reads O(file), an in-memory index called the **keydir** maps
-each key to `{fileId, valueSize, valueOffset, timestamp}`, so a read is one hash
+each key to `{fileId, valuePos, valueSize, timestamp}`, so a read is one hash
 lookup plus exactly one seek. Updates and deletes are also appends (a delete
 writes a *tombstone*), so garbage accumulates and a periodic **merge** rewrites
 the immutable files keeping only live records. Merge also emits **hint files** —
@@ -64,7 +64,7 @@ is about it not falling over as it grows.
 
 | # | Stage | ~Time | You build | You prove |
 |---|---|---|---|---|
-| 4 | **Tombstones + rollover** | 1.5 h | Deletes as appended tombstones; roll to a new file at a size threshold; `fileId` in the keydir; `stats()` | Delete 1000 keys and watch the store *grow*. 10 MiB at a 1 MiB threshold → 10 files, reads still work |
+| 4 | **Tombstones + rollover** | 1.5 h | Deletes as appended tombstones; roll to a new file at a size threshold; many files in the keydir; `stats()` | Delete 1000 keys and watch the store *grow*. 10 MiB at a 1 MiB threshold → 10 files, reads still work |
 | 5 | **Merge + hints** | 2.5 h | Compact the immutable files to live records only, write hint files, swap the keydir | Stage 4's garbage disappears; reads during merge never break; restart gets much faster |
 | 6 | **Prove it** *(optional)* | 1 h | A `kill -9` crash harness and a tiny REPL | Kill it mid-write in a loop and never lose an acked write |
 
@@ -95,11 +95,14 @@ Honest accounting, so you know what you're not seeing:
 src/
   bitcask.ts    the store            <- your work
   errors.ts     the error types      <- given
-  record.ts     encode/decode        <- appears in Stage 1
+  record.ts     encode/decode        <- your work
+  constants.ts  sizes and offsets    <- your work
+  utils.ts      shared validation    <- your work
 test/
   helpers.ts    tmpdir + `b()` Buffer shorthand
   stageNN.test.ts
-bench/          appears in Stage 2
+bench/
+  scan-vs-keydir.ts  the argument for the keydir, measured on your code
 docs/
   concepts.md          why Bitcask works the way it does -- read this first
   stage-NN.md          the brief for each stage: why, contract, build order
