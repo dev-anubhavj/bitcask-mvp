@@ -4,13 +4,16 @@ import {
   InvalidArgumentError,
   ClosedError,
   FileHandleError,
+  TruncatedRecordError,
+  CorruptRecordError,
 } from "./errors.ts";
 import { LIMITS } from "./constants.ts";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { open } from "node:fs/promises";
 import { isValidBufferKey, isValidValueBuffer } from "./utils.ts";
-import { decode, encode, HEADER_SIZE } from "./record.ts";
+import { decode, encode } from "./record.ts";
+import { truncate } from "node:fs/promises";
 
 export interface Options {
   /**
@@ -78,9 +81,20 @@ export class Bitcask {
   static async open(dir: string, opts: Options = {}): Promise<Bitcask> {
     // create the directory, if it does not exist, including parent directories.
     await mkdir(dir, { recursive: true });
+
+    // Create a file handle over the active file
     const fileHandle = await open(path.join(dir, "1.data"), "a+");
+
+    // Get the write offset on the active file
     const writeOffset = (await fileHandle.stat()).size;
-    return new Bitcask(dir, fileHandle, writeOffset, opts);
+
+    // Construct bitcask instance
+    const bitcaskInstance = new Bitcask(dir, fileHandle, writeOffset, opts);
+
+    // Walk through the active file and rebuild the keyDir
+    await bitcaskInstance.#rebuildKeyDir();
+
+    return bitcaskInstance;
   }
 
   /** Returns the value stored under `key`, or throws KeyNotFoundError. */
@@ -203,6 +217,54 @@ export class Bitcask {
     if (this.#fileHandle !== null) {
       await this.#fileHandle.close();
       this.#fileHandle = null;
+    }
+  }
+
+  /** Rebuilds keyDir during open */
+  async #rebuildKeyDir() {
+    // Fail early if file handle unavailable
+    if (this.#fileHandle === null)
+      throw new FileHandleError("file handle unavailable");
+
+    // Pull the file in memory and read it (NOT OPTIMAL)
+    const fileBytes = await this.#fileHandle.readFile();
+
+    // Offset at which the file is read to decode the record
+    let offset = 0;
+
+    try {
+      while (offset < fileBytes.length) {
+        // Get the decodedRecord
+        const decodedRecord = decode(fileBytes, offset);
+
+        // construct the recordMetadata to store in keyDir
+        const recordMetadata: RecordMetadata = {
+          offset: offset,
+          timestamp: decodedRecord.timestamp,
+          fileId: 1,
+          totalSize: decodedRecord.length,
+        };
+
+        // Update the keyDir with the updated value of the record
+        this.#keydir.set(decodedRecord.key.toString("latin1"), recordMetadata);
+
+        // update offset
+        offset += decodedRecord.length;
+      }
+    } catch (error) {
+      // Truncate and clean file on encountering truncated or corrupted records
+      if (
+        error instanceof TruncatedRecordError ||
+        error instanceof CorruptRecordError
+      ) {
+        // Truncate the file after the offset
+        await truncate(path.join(this.dir, "1.data"), offset);
+      } else {
+        throw error;
+      }
+    } finally {
+      // Update write offset
+      this.#writeOffset = offset;
     }
   }
 }
