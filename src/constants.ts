@@ -17,3 +17,9 @@ export const OFFSETS = {
   KEY_SIZE: 12,
   VALUE_SIZE: 14,
 } as const;
+
+/** Bytes representing a tombstone record value*/
+export const TOMB = Buffer.from("\x00tomb-4f2a9c\x00", "latin1");
+
+/** Default first data file name in the directory */
+export const DEFAULT_FIRST_DATAFILE_NAME = "1.data";

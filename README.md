@@ -103,6 +103,7 @@ test/
   stageNN.test.ts
 bench/
   scan-vs-keydir.ts  the argument for the keydir, measured on your code
+  garbage.ts         what append-only costs, measured on your code
 docs/
   concepts.md          why Bitcask works the way it does -- read this first
   stage-NN.md          the brief for each stage: why, contract, build order
