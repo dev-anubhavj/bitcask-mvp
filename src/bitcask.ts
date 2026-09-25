@@ -318,9 +318,13 @@ export class Bitcask {
       this.#fileHandle = null;
     }
 
-    for (const entry of this.#cachedFileHandles) {
-      await entry[1].close();
+    // close all cached file handles
+    for (const handle of this.#cachedFileHandles.values()) {
+      await handle.close();
     }
+
+    // clear the cache
+    this.#cachedFileHandles.clear();
   }
 
   async stats(): Promise<Stats> {
