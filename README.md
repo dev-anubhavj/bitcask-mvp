@@ -96,6 +96,7 @@ src/
   bitcask.ts    the store            <- your work
   errors.ts     the error types      <- given
   record.ts     encode/decode        <- your work
+  hint.ts       the hint file format
   constants.ts  sizes and offsets    <- your work
   utils.ts      shared validation    <- your work
 test/
@@ -104,6 +105,7 @@ test/
 bench/
   scan-vs-keydir.ts  the argument for the keydir, measured on your code
   garbage.ts         what append-only costs, measured on your code
+  merge.ts           what merge and hints give back, measured on your code
 docs/
   concepts.md          why Bitcask works the way it does -- read this first
   stage-NN.md          the brief for each stage: why, contract, build order

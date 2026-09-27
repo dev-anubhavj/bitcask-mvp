@@ -5,6 +5,9 @@ import {
   stat,
   open,
   readFile,
+  writeFile,
+  unlink,
+  rename,
 } from "node:fs/promises";
 import {
   KeyNotFoundError,
@@ -19,6 +22,7 @@ import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { isValidBufferKey, isValidValueBuffer } from "./utils.ts";
 import { decode, encode } from "./record.ts";
+import { encodeHintEntry, decodeHintFile, type HintEntry } from "./hint.ts";
 
 export interface Options {
   /**
@@ -303,6 +307,178 @@ export class Bitcask {
     return keys;
   }
 
+  /** Performs compaction */
+  async merge(): Promise<void> {
+    // Validation: Reject any operation once the store is closed
+    if (this.#closed) throw new ClosedError();
+
+    // get all the frozen data files
+    const frozenDataFileNames = (await this.#getAllDataFileName()).filter(
+      (fileName, _) => Number(path.parse(fileName).name) !== this.#activeFileId,
+    );
+
+    // Sort them by ids
+    const sortedFrozenDataFileNames = frozenDataFileNames.sort(
+      (file1, file2) =>
+        Number(path.parse(file1).name) - Number(path.parse(file2).name),
+    );
+
+    // If no frozen file, nothing to do
+    if (sortedFrozenDataFileNames.length === 0) return;
+
+    // Initialize merge file metadata
+    let activeMergeFileId = 1;
+    let activeMergeOffset = 0;
+    let activeMergeFileHandle = await open(
+      path.join(this.dir, activeMergeFileId.toString() + ".merge"),
+      "a+",
+    );
+
+    // Hint entries for the merge file currently being written
+    let activeMergeHintEntries: Buffer[] = [];
+
+    /**
+     * Closes the merge file being written and writes its hint file, then moves
+     * the id on. A file that got no records is thrown away instead, and keeps
+     * its id, so merge never leaves an empty data file or a hint for one.
+     */
+    const finishActiveMergeFile = async () => {
+      await activeMergeFileHandle.close();
+
+      if (activeMergeOffset === 0) {
+        await unlink(
+          path.join(this.dir, activeMergeFileId.toString() + ".merge"),
+        );
+        return;
+      }
+
+      await writeFile(
+        path.join(this.dir, activeMergeFileId.toString() + ".hintmerge"),
+        Buffer.concat(activeMergeHintEntries),
+      );
+      activeMergeFileId += 1;
+    };
+    let activeHintOffset = 0;
+    let activeHintFileHandle = await open(
+      path.join(this.dir, activeMergeFileId.toString() + ".hint"),
+      "a+",
+    );
+
+    // iterate over each of them and create merge files
+    for (const fileName of sortedFrozenDataFileNames) {
+      const filePath = path.join(this.dir, fileName);
+
+      // Reads the entire file in-memory (NOT OPTIMAL)
+      const fileBytes = await readFile(filePath);
+      const fileId = Number(path.parse(filePath).name);
+
+      let offset = 0;
+      try {
+        while (offset < fileBytes.length) {
+          const decodedRecord = decode(fileBytes, offset);
+          const keyString = decodedRecord.key.toString("latin1");
+          const recordMetadata = this.#keydir.get(keyString);
+
+          // check if this record is in keyDir
+          if (
+            recordMetadata !== undefined &&
+            recordMetadata.fileId === fileId &&
+            recordMetadata.offset === offset &&
+            recordMetadata.timestamp === decodedRecord.timestamp
+          ) {
+            // this record needs to be preserved
+            const preservedRecord = Buffer.from(
+              fileBytes.subarray(offset, offset + decodedRecord.length),
+            );
+
+            // check and rollover -- a record is never split, so a single
+            // record bigger than the threshold stays where it is
+            if (
+              activeMergeOffset > 0 &&
+              activeMergeOffset + preservedRecord.length > this.#maxFileSize!
+            ) {
+              // close existing file and write its hint file
+              await finishActiveMergeFile();
+
+              // initialize new file
+              activeMergeFileHandle = await open(
+                path.join(this.dir, activeMergeFileId.toString() + ".merge"),
+                "a+",
+              );
+              activeMergeOffset = 0;
+              activeMergeHintEntries = [];
+            }
+
+            // write to the merge file
+            await activeMergeFileHandle.write(preservedRecord);
+
+            // update keyDir with update metadata
+            const updateRecordMetadata: RecordMetadata = {
+              fileId: activeMergeFileId,
+              offset: activeMergeOffset,
+              timestamp: decodedRecord.timestamp,
+              totalSize: preservedRecord.length,
+            };
+
+            this.#keydir.set(keyString, updateRecordMetadata);
+
+            // the same entry, for the hint file of this merge file
+            activeMergeHintEntries.push(
+              encodeHintEntry(decodedRecord.key, updateRecordMetadata),
+            );
+
+            activeMergeOffset += preservedRecord.length;
+          }
+
+          // increment offset
+          offset += decodedRecord.length;
+        }
+      } catch (error) {
+        throw error;
+      }
+
+      // close any active read handles over this frozen data file
+      if (this.#cachedFileHandles.has(fileId)) {
+        await this.#cachedFileHandles.get(fileId)?.close();
+        this.#cachedFileHandles.delete(fileId);
+      }
+
+      // safely unlink this data file, and the hint file that described it --
+      // a hint that outlives its data file would describe whatever file turns
+      // up next under that name
+      await unlink(filePath);
+      await unlink(path.join(this.dir, fileId.toString() + ".hint")).catch(
+        () => undefined,
+      );
+    }
+
+    // close the last merge file and write its hint file
+    await finishActiveMergeFile();
+
+    const fileNames = await readdir(this.dir);
+
+    // rename the merged data files into place
+    for (const mergeFile of fileNames.filter(
+      (file, _) => path.extname(file) === ".merge",
+    )) {
+      await rename(
+        path.join(this.dir, mergeFile),
+        path.join(this.dir, path.parse(mergeFile).name + ".data"),
+      );
+    }
+
+    // then their hint files: a data file with no hint is a state open already
+    // handles, a hint file describing the wrong data file is not
+    for (const hintMergeFile of fileNames.filter(
+      (file, _) => path.extname(file) === ".hintmerge",
+    )) {
+      await rename(
+        path.join(this.dir, hintMergeFile),
+        path.join(this.dir, path.parse(hintMergeFile).name + ".hint"),
+      );
+    }
+  }
+
   /**
    * Closes the store. Calling it a second time does nothing.
    * Every other method throws ClosedError after this.
@@ -327,6 +503,7 @@ export class Bitcask {
     this.#cachedFileHandles.clear();
   }
 
+  /** Returns statistics about the store */
   async stats(): Promise<Stats> {
     // Validation: Reject any operation once the store is closed
     if (this.#closed) throw new ClosedError();
@@ -363,10 +540,30 @@ export class Bitcask {
     // Iterate over all data files in sorted order
     for (const fileName of sortedDataFileNames) {
       const filePath = path.join(this.dir, fileName);
+      const fileId = Number(path.parse(filePath).name);
+
+      // A frozen file with a usable hint file does not need reading: the hint
+      // holds every keydir entry this file would have produced, and none of
+      // the values. The active file is always replayed -- it is still being
+      // appended to, and it is the one file whose tail can be torn.
+      if (fileName !== sortedDataFileNames[sortedDataFileNames.length - 1]) {
+        const hintEntries = await this.#readHintFile(fileId);
+
+        if (hintEntries !== null) {
+          for (const hintEntry of hintEntries) {
+            this.#keydir.set(hintEntry.key.toString("latin1"), {
+              fileId: fileId,
+              offset: hintEntry.offset,
+              totalSize: hintEntry.totalSize,
+              timestamp: hintEntry.timestamp,
+            });
+          }
+          continue;
+        }
+      }
 
       // Reads the entire file in-memory (NOT OPTIMAL)
       const fileBytes = await readFile(filePath);
-      const fileId = Number(path.parse(filePath).name);
 
       // Offset at which the file is read to decode the record
       let offset = 0;
@@ -415,6 +612,19 @@ export class Bitcask {
           this.#writeOffset = offset;
       }
     }
+  }
+
+  /**
+   * Reads the hint file for a data file, or returns null when there is not one
+   * that can be trusted. Either way the caller has one thing to do about it:
+   * replay the data file instead.
+   */
+  async #readHintFile(fileId: number): Promise<HintEntry[] | null> {
+    const hintBytes = await readFile(
+      path.join(this.dir, fileId.toString() + ".hint"),
+    ).catch(() => null);
+
+    return hintBytes === null ? null : decodeHintFile(hintBytes);
   }
 
   /** Gets all data file names from the directory */
