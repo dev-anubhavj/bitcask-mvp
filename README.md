@@ -26,6 +26,14 @@ bun test --watch      # re-run on save
 bun run typecheck     # tsc --noEmit -- bun test does NOT typecheck for you
 ```
 
+The benchmarks are separate scripts, one per idea:
+
+```bash
+bun run bench/scan-vs-keydir.ts   # Stage 2: index vs full scan
+bun run bench/garbage.ts          # Stage 4: what append-only costs
+bun run bench/merge.ts            # Stage 5: what merge + hints give back
+```
+
 Tests scribble into `./.tmp/` and clean up after themselves. Comment out the
 `afterAll(cleanup)` in a test file when you want to go hexdump a data file:
 
@@ -54,7 +62,7 @@ lookup table for exactly the TS and Buffer surface this project uses. Read §3
 |---|---|---|---|---|
 | 0 | **The API** | 45 min | `open/put/get/delete/keys/close` over an in-memory `Map` | The interface that survives all seven stages |
 | 1 | **The record** | 1.5 h | Encode/decode one entry, with a CRC over the bytes | Round-trip any key/value; flip any single byte and the CRC catches it |
-| 2 | **Log + keydir** | 2 h | Append-only file, plus the in-memory index. `get` = 1 lookup + 1 positional read | Data survives in a real file; `bun run bench/` shows the index flattening the read curve |
+| 2 | **Log + keydir** | 2 h | Append-only file, plus the in-memory index. `get` = 1 lookup + 1 positional read | Data survives in a real file; `bun run bench/scan-vs-keydir.ts` shows the index flattening the read curve |
 | 3 | **Recovery** | 1.5 h | Rebuild the keydir by replaying the log on `open` | Reopen and everything's there; chop the file mid-record and it *still* opens |
 
 At the end of day one you have a durable key/value store. Everything after this
@@ -66,7 +74,7 @@ is about it not falling over as it grows.
 |---|---|---|---|---|
 | 4 | **Tombstones + rollover** | 1.5 h | Deletes as appended tombstones; roll to a new file at a size threshold; many files in the keydir; `stats()` | Delete 1000 keys and watch the store *grow*. 10 MiB at a 1 MiB threshold → 10 files, reads still work |
 | 5 | **Merge + hints** | 2.5 h | Compact the immutable files to live records only, write hint files, swap the keydir | Stage 4's garbage disappears; reads during merge never break; restart gets much faster |
-| 6 | **Prove it** *(optional)* | 1 h | A `kill -9` crash harness and a tiny REPL | Kill it mid-write in a loop and never lose an acked write |
+| 6 | **Prove it** *(optional, not built yet)* | 1 h | A `kill -9` crash harness and a tiny REPL | Kill it mid-write in a loop and never lose an acked write |
 
 **Stages 2 and 5 are the two that actually teach the paper** — *why an index
 exists*, and *why compaction exists*. If you run out of time, cut Stage 6 and
